@@ -164,16 +164,22 @@ export function RevidVideoComposition({
           },
         ];
 
-  let accumulatedFrames = 0;
+  const sceneSequences = activeScenes.reduce((sequences, scene, index) => {
+    const sceneDurationInFrames = Math.max(30, (scene.durationSeconds || 5) * fps);
+    const previous = sequences[index - 1];
+    const fromFrame = previous
+      ? previous.fromFrame + previous.durationInFrames
+      : 0;
+    return [
+      ...sequences,
+      { scene, index, fromFrame, durationInFrames: sceneDurationInFrames },
+    ];
+  }, []);
 
   return (
     <AbsoluteFill className="bg-black select-none font-sans">
       {/* Dynamic Scenes Sequence */}
-      {activeScenes.map((scene, index) => {
-        const sceneDurationInFrames = Math.max(30, (scene.durationSeconds || 5) * fps);
-        const fromFrame = accumulatedFrames;
-        accumulatedFrames += sceneDurationInFrames;
-
+      {sceneSequences.map(({ scene, index, fromFrame, durationInFrames: sceneDurationInFrames }) => {
         return (
           <Sequence
             key={scene.id || index}

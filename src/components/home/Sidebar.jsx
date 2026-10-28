@@ -211,7 +211,7 @@ export function Sidebar({
           className="w-full py-2 bg-zinc-950 hover:bg-zinc-800 text-white rounded-full font-medium text-xs flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
         >
           <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
-          <span>Upgrade now</span>
+          <span>Credit balance</span>
         </button>
 
         {/* User Card */}
@@ -289,7 +289,7 @@ export function Sidebar({
             <span>{credits.toLocaleString()} credits</span>
           </div>
           <span className="text-[10px] text-emerald-600 font-bold hover:underline">
-            + Top Up
+            View
           </span>
         </div>
       </div>

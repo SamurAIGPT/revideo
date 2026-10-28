@@ -44,7 +44,10 @@ model User {
   accounts      Account[]
   sessions      Session[]
   videoProjects VideoProject[]
+  videoRenders  VideoRender[]
   savedVideos   SavedVideo[]
+  creditTransactions CreditTransaction[]
+  apiRateLimits ApiRateLimit[]
 }
 
 model VerificationToken {
@@ -57,7 +60,7 @@ model VerificationToken {
 
 model VideoProject {
   id              String   @id
-  userId          String?
+  userId          String?  @map("user_id")
   title           String   @default("Untitled Video")
   prompt          String?  @db.Text
   script          String?  @db.Text
@@ -65,15 +68,18 @@ model VideoProject {
   durationSeconds Int      @default(30) @map("duration_seconds")
   voice           String   @default("marcus")
   captionStyle    String   @default("hormozi") @map("caption_style")
-  musicTrack      String   @default("lofi") @map("music_track")
+  musicTrack      String   @default("none") @map("music_track")
   musicVolume     Decimal  @default(0.25) @map("music_volume")
   scenes          Json     @default("[]")
+  audioTrackData  Json?    @map("audio_track_data")
   thumbnailUrl    String?  @map("thumbnail_url")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
   user            User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  renders         VideoRender[]
 
   @@map("video_projects")
+  @@index([userId, updatedAt])
 }
 
 model VideoRender {
@@ -85,8 +91,12 @@ model VideoRender {
   durationSeconds Decimal? @map("duration_seconds")
   fileSizeBytes   BigInt?  @map("file_size_bytes")
   createdAt       DateTime @default(now()) @map("created_at")
+  project         VideoProject? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user            User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("video_renders")
+  @@index([projectId])
+  @@index([userId])
 }
 
 model SavedVideo {
@@ -103,6 +113,7 @@ model SavedVideo {
   user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("saved_videos")
+  @@index([userId, createdAt])
 }
 
 model CreditTransaction {
@@ -113,6 +124,20 @@ model CreditTransaction {
   reason       String?
   balanceAfter Int?     @map("balance_after")
   createdAt    DateTime @default(now()) @map("created_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("credit_transactions")
+  @@index([userId, createdAt])
+}
+
+model ApiRateLimit {
+  id        String   @id
+  userId    String   @map("user_id")
+  route     String
+  count     Int      @default(0)
+  expiresAt DateTime @map("expires_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_rate_limits")
+  @@index([expiresAt])
 }

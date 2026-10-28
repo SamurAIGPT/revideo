@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { BACKGROUND_MEDIA } from "@/lib/constants";
+import { DBService } from "@/lib/db";
+import { getAuthenticatedUser } from "@/lib/server-auth";
+import { checkUserRateLimit } from "@/lib/server-rate-limit";
 
 // Heuristic fallback script creator that can structure any prompt into viral scenes
 function generateHeuristicScenes(prompt, targetDuration = 30) {
@@ -75,14 +78,36 @@ function generateHeuristicScenes(prompt, targetDuration = 30) {
 
 export async function POST(req) {
   try {
-    const body = await req.json();
-    const { prompt, duration = 30 } = body;
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+    }
+    const rateLimitResponse = await checkUserRateLimit(user.id, "generate-script", 12);
+    if (rateLimitResponse) return rateLimitResponse;
 
-    if (!prompt) {
+    const body = await req.json().catch(() => null);
+    const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+    const requestedDuration = Number(body?.duration ?? 30);
+    const duration = Number.isFinite(requestedDuration)
+      ? Math.max(10, Math.min(90, Math.round(requestedDuration)))
+      : 30;
+
+    if (!prompt || prompt.length > 1000) {
       return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
     }
 
-    const apiKey = process.env.MUAPIAPP_API_KEY || process.env.OPENAI_API_KEY;
+    let creditResult;
+    try {
+      creditResult = await DBService.deductCredits(user.id, 5, "AI script generation");
+    } catch (err) {
+      const insufficient = err.message?.startsWith("Insufficient credits.");
+      return NextResponse.json(
+        { error: insufficient ? err.message : "Unable to reserve credits", insufficient },
+        { status: insufficient ? 402 : 500 }
+      );
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
 
     // If an API key is available, attempt real AI generation via OpenAI compatible endpoint
     if (apiKey) {
@@ -106,6 +131,7 @@ Include between 3 and 5 scenes. Keep narration conversational, fast-paced, and p
 
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
+          signal: AbortSignal.timeout(20000),
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
@@ -124,23 +150,30 @@ Include between 3 and 5 scenes. Keep narration conversational, fast-paced, and p
         if (response.ok) {
           const data = await response.json();
           const content = JSON.parse(data.choices[0]?.message?.content || "{}");
-          if (content.scenes && Array.isArray(content.scenes)) {
-            const mappedScenes = content.scenes.map((s, idx) => {
+          if (Array.isArray(content.scenes)) {
+            const mappedScenes = content.scenes
+              .filter((scene) => typeof scene?.narration === "string" && scene.narration.trim())
+              .slice(0, 5)
+              .map((s, idx) => {
               const matchedBg = BACKGROUND_MEDIA[idx % BACKGROUND_MEDIA.length];
               return {
                 id: `sc-${Date.now()}-${idx + 1}`,
-                badge: s.badge || `SCENE ${idx + 1}`,
-                narration: s.narration,
+                badge: typeof s.badge === "string" ? s.badge.slice(0, 80) : `SCENE ${idx + 1}`,
+                narration: s.narration.trim().slice(0, 1000),
                 visualId: matchedBg.id,
                 durationSeconds: Math.max(3, Math.min(12, s.durationSeconds || 6)),
               };
             });
 
-            return NextResponse.json({
-              title: content.title || "Viral Short Video",
-              scenes: mappedScenes,
-              source: "ai",
-            });
+            if (mappedScenes.length > 0) {
+              return NextResponse.json({
+                success: true,
+                title: typeof content.title === "string" ? content.title.slice(0, 120) : "Viral Short Video",
+                scenes: mappedScenes,
+                source: "ai",
+                credits: creditResult.credits,
+              });
+            }
           }
         }
       } catch (aiErr) {
@@ -151,9 +184,11 @@ Include between 3 and 5 scenes. Keep narration conversational, fast-paced, and p
     // Heuristic fallback generator
     const fallback = generateHeuristicScenes(prompt, duration);
     return NextResponse.json({
+      success: true,
       title: fallback.title,
       scenes: fallback.scenes,
       source: "local-engine",
+      credits: creditResult.credits,
     });
   } catch (err) {
     console.error("API error:", err);

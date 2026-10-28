@@ -57,6 +57,7 @@ export default function RevidHomePage() {
 
       {/* Creation Modal */}
       <CreateModal
+        key={isCreateOpen ? JSON.stringify(createInitialData || {}) : "closed"}
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
         initialData={createInitialData}

@@ -1,8 +1,20 @@
 import { NextResponse } from "next/server";
+import { getAuthenticatedUser } from "@/lib/server-auth";
+import { checkUserRateLimit } from "@/lib/server-rate-limit";
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
 const MUAPI_URL = process.env.MU_API_BASE_URL || "https://api.muapi.ai";
 const MUAPI_KEY = process.env.MUAPIAPP_API_KEY || "";
+
+function clampInteger(value, fallback, min, max) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.trunc(number))) : fallback;
+}
+
+function normalizePlatforms(platforms) {
+  if (!Array.isArray(platforms)) return ["youtube"];
+  return [...new Set(platforms.filter((platform) => ["youtube", "tiktok", "instagram"].includes(platform)))];
+}
 
 // Parse YouTube duration string (e.g. PT2M58S, PT19S, PT1H2M) into seconds
 function parseYouTubeDuration(isoDuration) {
@@ -35,10 +47,10 @@ async function fetchRealYouTubeVideos(query, count = 15, sortOrder = "relevance"
   const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=${count}&q=${cleanQuery}&type=video&order=${ytOrder}&key=${YOUTUBE_API_KEY}`;
 
   try {
-    const searchRes = await fetch(searchUrl);
+    const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10000) });
     if (!searchRes.ok) {
-      const errorText = await searchRes.text();
-      return { error: `YouTube API Search error: ${errorText}`, videos: [] };
+      console.error("YouTube search request failed with status:", searchRes.status);
+      return { error: "YouTube search request failed", videos: [] };
     }
 
     const searchData = await searchRes.json();
@@ -50,10 +62,10 @@ async function fetchRealYouTubeVideos(query, count = 15, sortOrder = "relevance"
     const videoIds = items.map((i) => i.id?.videoId).filter(Boolean).join(",");
     const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoIds}&key=${YOUTUBE_API_KEY}`;
 
-    const detailsRes = await fetch(detailsUrl);
+    const detailsRes = await fetch(detailsUrl, { signal: AbortSignal.timeout(10000) });
     if (!detailsRes.ok) {
-      const errorText = await detailsRes.text();
-      return { error: `YouTube API Details error: ${errorText}`, videos: [] };
+      console.error("YouTube details request failed with status:", detailsRes.status);
+      return { error: "YouTube details request failed", videos: [] };
     }
 
     const detailsData = await detailsRes.json();
@@ -107,7 +119,8 @@ async function fetchRealYouTubeVideos(query, count = 15, sortOrder = "relevance"
 
     return { videos: normalized };
   } catch (err) {
-    return { error: err.message, videos: [] };
+    console.error("YouTube search request error:", err);
+    return { error: "YouTube search is temporarily unavailable", videos: [] };
   }
 }
 
@@ -120,6 +133,7 @@ async function fetchRealMuApiPosts(platform, query, count = 12) {
   try {
     const res = await fetch(`${MUAPI_URL}/api/v1/social-search-posts`, {
       method: "POST",
+      signal: AbortSignal.timeout(6000),
       headers: {
         "Content-Type": "application/json",
         "x-api-key": MUAPI_KEY,
@@ -131,19 +145,24 @@ async function fetchRealMuApiPosts(platform, query, count = 12) {
       }),
     });
 
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      return { error: data?.error?.message || data?.detail || "MuAPI request failed", videos: [] };
+      console.error("MuAPI social search failed with status:", res.status);
+      return { error: "Social video search request failed", videos: [] };
     }
 
     if (data.request_id) {
-      // Poll prediction task
-      for (let i = 0; i < 8; i++) {
-        await new Promise((r) => setTimeout(r, 1500));
-        const poll = await fetch(`${MUAPI_URL}/api/v1/predictions/${data.request_id}/result`, {
+      // Keep provider polling bounded so multi-platform searches can return in time.
+      const pollDeadline = Date.now() + 6000;
+      for (let i = 0; i < 5 && Date.now() < pollDeadline; i++) {
+        await new Promise((r) => setTimeout(r, Math.min(750, Math.max(0, pollDeadline - Date.now()))));
+        const remainingMs = pollDeadline - Date.now();
+        if (remainingMs <= 0) break;
+        const poll = await fetch(`${MUAPI_URL}/api/v1/predictions/${encodeURIComponent(data.request_id)}/result`, {
           headers: { "x-api-key": MUAPI_KEY },
+          signal: AbortSignal.timeout(Math.min(2000, remainingMs)),
         });
-        const pollData = await poll.json();
+        const pollData = await poll.json().catch(() => ({}));
         if (poll.ok) {
           const list = Array.isArray(pollData) ? pollData : pollData?.results?.videos || pollData?.videos || [];
           if (list.length > 0) {
@@ -180,31 +199,52 @@ async function fetchRealMuApiPosts(platform, query, count = 12) {
 
     return { videos: [] };
   } catch (err) {
-    return { error: err.message, videos: [] };
+    console.error("MuAPI social search request error:", err);
+    return { error: "Social video search is temporarily unavailable", videos: [] };
   }
 }
 
 export async function POST(req) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const user = await getAuthenticatedUser();
+    if (!user) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+    const rateLimitResponse = await checkUserRateLimit(user.id, "repurpose-search", 20);
+    if (rateLimitResponse) return rateLimitResponse;
+
+    const parsedBody = await req.json().catch(() => ({}));
+    const body = parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+      ? parsedBody
+      : {};
     const {
       query = "startup",
       mode = "posts", // "posts" or "ads"
-      platforms = ["youtube"],
-      count = 15,
-      min_views = 0,
-      min_likes = 0,
-      max_duration = 0,
-      sort_order = "relevance",
+      platforms: requestedPlatforms = ["youtube"],
+      count: requestedCount = 15,
+      min_views: requestedMinViews = 0,
+      min_likes: requestedMinLikes = 0,
+      max_duration: requestedMaxDuration = 0,
+      sort_order: requestedSortOrder = "relevance",
       exclude_keywords = [],
     } = body;
+    const cleanQuery = typeof query === "string" ? query.trim().slice(0, 200) : "";
+    const platforms = normalizePlatforms(requestedPlatforms);
+    const count = clampInteger(requestedCount, 15, 1, 25);
+    const safeMode = mode === "ads" ? "ads" : "posts";
+    const min_views = clampInteger(requestedMinViews, 0, 0, 1000000000);
+    const min_likes = clampInteger(requestedMinLikes, 0, 0, 1000000000);
+    const max_duration = clampInteger(requestedMaxDuration, 0, 0, 86400);
+    const sort_order = typeof requestedSortOrder === "string" ? requestedSortOrder.slice(0, 30) : "relevance";
+
+    if (!cleanQuery || platforms.length === 0) {
+      return NextResponse.json({ error: "A query and supported platform are required" }, { status: 400 });
+    }
 
     let realVideos = [];
     const errors = [];
 
     // 1. YouTube Live Query
     if (platforms.includes("youtube")) {
-      const ytResult = await fetchRealYouTubeVideos(query, count, sort_order, min_likes, max_duration, mode);
+      const ytResult = await fetchRealYouTubeVideos(cleanQuery, count, sort_order, min_likes, max_duration, safeMode);
       if (ytResult.videos && ytResult.videos.length > 0) {
         realVideos.push(...ytResult.videos);
       }
@@ -216,7 +256,7 @@ export async function POST(req) {
     // 2. MuAPI Live Queries (TikTok, Instagram)
     for (const plat of ["tiktok", "instagram"]) {
       if (platforms.includes(plat)) {
-        const muResult = await fetchRealMuApiPosts(plat, query, count);
+        const muResult = await fetchRealMuApiPosts(plat, cleanQuery, count);
         if (muResult.videos && muResult.videos.length > 0) {
           realVideos.push(...muResult.videos);
         }
@@ -227,9 +267,10 @@ export async function POST(req) {
     }
 
     // Exclude keywords filter
-    if (exclude_keywords && exclude_keywords.length > 0) {
-      const exLower = (Array.isArray(exclude_keywords) ? exclude_keywords : exclude_keywords.split(","))
-        .map((k) => k.trim().toLowerCase())
+    if (Array.isArray(exclude_keywords) && exclude_keywords.length > 0) {
+      const exLower = exclude_keywords
+        .filter((keyword) => typeof keyword === "string")
+        .map((keyword) => keyword.trim().toLowerCase().slice(0, 80))
         .filter(Boolean);
 
       if (exLower.length > 0) {
@@ -264,8 +305,8 @@ export async function POST(req) {
 
     return NextResponse.json({
       success: true,
-      mode,
-      query,
+      mode: safeMode,
+      query: cleanQuery,
       videos: realVideos,
       total: realVideos.length,
       errors: errors.length > 0 ? errors : undefined,
@@ -273,7 +314,7 @@ export async function POST(req) {
   } catch (err) {
     console.error("POST /api/repurpose/search error:", err);
     return NextResponse.json(
-      { error: err.message || "Failed to search viral videos" },
+      { error: "Failed to search viral videos" },
       { status: 500 }
     );
   }
@@ -281,22 +322,32 @@ export async function POST(req) {
 
 export async function GET(req) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+    const rateLimitResponse = await checkUserRateLimit(user.id, "repurpose-search", 20);
+    if (rateLimitResponse) return rateLimitResponse;
+
     const { searchParams } = new URL(req.url);
-    const query = searchParams.get("q") || searchParams.get("query") || "startup";
+    const query = (searchParams.get("q") || searchParams.get("query") || "startup").trim().slice(0, 200);
     const mode = searchParams.get("mode") || "posts";
     const platformParam = searchParams.get("platform") || searchParams.get("platforms") || "youtube";
-    const platforms = platformParam.split(",").map((p) => p.trim());
-    const count = Number(searchParams.get("count") || 15);
-    const min_views = Number(searchParams.get("min_views") || 0);
-    const min_likes = Number(searchParams.get("min_likes") || 0);
-    const max_duration = Number(searchParams.get("max_duration") || 0);
+    const platforms = normalizePlatforms(platformParam.split(",").map((platform) => platform.trim()));
+    const count = clampInteger(searchParams.get("count") || 15, 15, 1, 25);
+    const min_views = clampInteger(searchParams.get("min_views") || 0, 0, 0, 1000000000);
+    const min_likes = clampInteger(searchParams.get("min_likes") || 0, 0, 0, 1000000000);
+    const max_duration = clampInteger(searchParams.get("max_duration") || 0, 0, 0, 86400);
+    const safeMode = mode === "ads" ? "ads" : "posts";
+
+    if (!query || platforms.length === 0) {
+      return NextResponse.json({ error: "A query and supported platform are required" }, { status: 400 });
+    }
     const sort_order = searchParams.get("sort_order") || "relevance";
 
     let realVideos = [];
     const errors = [];
 
     if (platforms.includes("youtube")) {
-      const ytResult = await fetchRealYouTubeVideos(query, count, sort_order, min_likes, max_duration, mode);
+      const ytResult = await fetchRealYouTubeVideos(query, count, sort_order, min_likes, max_duration, safeMode);
       if (ytResult.videos && ytResult.videos.length > 0) {
         realVideos.push(...ytResult.videos);
       }
@@ -335,7 +386,7 @@ export async function GET(req) {
 
     return NextResponse.json({
       success: true,
-      mode,
+      mode: safeMode,
       query,
       videos: realVideos,
       total: realVideos.length,
@@ -344,7 +395,7 @@ export async function GET(req) {
   } catch (err) {
     console.error("GET /api/repurpose/search error:", err);
     return NextResponse.json(
-      { error: err.message || "Failed to search viral videos" },
+      { error: "Failed to search viral videos" },
       { status: 500 }
     );
   }

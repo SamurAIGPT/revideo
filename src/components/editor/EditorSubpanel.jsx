@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useVideoEditor } from "@/context/VideoEditorContext";
 import { BACKGROUND_MEDIA, CAPTION_STYLES, VOICES } from "@/lib/constants";
+import { useAuth } from "@/context/AuthContext";
 
 export function EditorSubpanel() {
   const {
@@ -53,22 +54,25 @@ export function EditorSubpanel() {
     mediaFilter,
     setMediaFilter,
     uploadMedia,
+    mediaUploadError,
+    mediaWarning,
 
     audioTrackData,
     isAudioPreviewPlaying,
     toggleAudioPreview,
     deleteAudio,
-    replaceAudio,
     generateCaptionsFromAudio,
   } = useVideoEditor();
 
   const fileInputRef = useRef(null);
   const audioReplaceInputRef = useRef(null);
+  const { isAuthenticated, setIsLoginModalOpen, setIsTopUpOpen } = useAuth();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiDuration, setAiDuration] = useState(30);
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
+  const [aiError, setAiError] = useState("");
   const [isCaptionsGeneratedNotice, setIsCaptionsGeneratedNotice] = useState(false);
 
   // Filter scenes by narration search
@@ -126,15 +130,7 @@ export function EditorSubpanel() {
   const handleReplaceAudioUpload = (e) => {
     const file = e.target.files?.[0];
     if (file) {
-      const objectUrl = URL.createObjectURL(file);
-      replaceAudio({
-        id: `audio-${Date.now()}`,
-        name: file.name,
-        duration: "0:30",
-        durationSeconds: 30,
-        url: objectUrl,
-        type: "Uploaded Music",
-      });
+      uploadMedia(file);
       e.target.value = "";
     }
   };
@@ -143,10 +139,15 @@ export function EditorSubpanel() {
   const handleGenerateScript = async (prompt) => {
     const finalPrompt = prompt || aiPrompt;
     if (!finalPrompt.trim()) return;
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
 
     setIsGeneratingAi(true);
+    setAiError("");
     try {
-      const res = await fetch("/api/repurpose/generate", {
+      const res = await fetch("/api/generate-script", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -157,49 +158,26 @@ export function EditorSubpanel() {
       });
 
       const data = await res.json();
-      if (data.success && Array.isArray(data.scenes) && data.scenes.length > 0) {
-        setScenes(data.scenes);
-        setCurrentSceneIndex(0);
-      } else {
-        const generatedScenes = [
-          {
-            id: `sc-${Date.now()}-1`,
-            badge: "HOOK ⚡",
-            narration: `${finalPrompt}: Most people have no idea this exists.`,
-            visualId: "cyber-city",
-            durationSeconds: 5,
-            transition: "fade",
-          },
-          {
-            id: `sc-${Date.now()}-2`,
-            badge: "THE PROBLEM",
-            narration: "The traditional approach takes hours and costs thousands of dollars.",
-            visualId: "matrix-code",
-            durationSeconds: 6,
-            transition: "slide",
-          },
-          {
-            id: `sc-${Date.now()}-3`,
-            badge: "THE SECRET",
-            narration: "Here is the exact framework top performers use to achieve 10x output.",
-            visualId: "clip-2",
-            durationSeconds: 7,
-            transition: "zoom",
-          },
-          {
-            id: `sc-${Date.now()}-4`,
-            badge: "CALL TO ACTION",
-            narration: "Save this video right now and follow for part two tomorrow.",
-            visualId: "luxury-car",
-            durationSeconds: 5,
-            transition: "fade",
-          },
-        ];
-        setScenes(generatedScenes);
-        setCurrentSceneIndex(0);
+      if (!res.ok) {
+        if (res.status === 401) setIsLoginModalOpen(true);
+        if (res.status === 402) setIsTopUpOpen(true);
+        throw new Error(data.error || "Failed to generate script");
+      }
+
+      if (!Array.isArray(data.scenes) || data.scenes.length === 0) {
+        throw new Error("The script service returned no scenes.");
+      }
+
+      setScenes(data.scenes);
+      setCurrentSceneIndex(0);
+      if (Number.isInteger(data.credits)) {
+        window.dispatchEvent(
+          new CustomEvent("revid-credits-updated", { detail: { credits: data.credits } })
+        );
       }
     } catch (err) {
       console.error("AI script generation error:", err);
+      setAiError(err.message || "Failed to generate script");
     } finally {
       setIsGeneratingAi(false);
     }
@@ -331,6 +309,11 @@ export function EditorSubpanel() {
 
           {/* Content Area Based on Media Tab */}
           <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+            {(mediaUploadError || mediaWarning) && (
+              <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800">
+                {mediaUploadError || mediaWarning}
+              </p>
+            )}
             {mediaTab === "library" && (
               <>
                 {mediaLibrary.length === 0 ? (
@@ -361,10 +344,14 @@ export function EditorSubpanel() {
                         onClick={() => {
                           if (item.type === "video") {
                             updateScene(currentSceneIndex, "videoUrl", item.url);
-                            updateScene(currentSceneIndex, "imageUrl", item.poster || item.url);
+                            updateScene(currentSceneIndex, "videoAssetId", item.assetId);
+                            updateScene(currentSceneIndex, "imageUrl", "");
+                            updateScene(currentSceneIndex, "imageAssetId", undefined);
                           } else if (item.type === "image") {
                             updateScene(currentSceneIndex, "imageUrl", item.url);
+                            updateScene(currentSceneIndex, "imageAssetId", item.assetId);
                             updateScene(currentSceneIndex, "videoUrl", "");
+                            updateScene(currentSceneIndex, "videoAssetId", undefined);
                           }
                         }}
                         className="group relative aspect-video rounded-xl overflow-hidden border border-zinc-200 hover:border-emerald-500 cursor-pointer shadow-xs transition bg-zinc-100"
@@ -554,10 +541,10 @@ export function EditorSubpanel() {
                   <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-orange-400 via-rose-500 to-indigo-600 flex-shrink-0 shadow-2xs" />
                   <div className="overflow-hidden">
                     <h3 className="text-xs font-bold text-zinc-900 truncate">
-                      {audioTrackData.name || "1793086207095-audio.mp3"}
+                      {audioTrackData.name || "Uploaded audio"}
                     </h3>
                     <p className="text-[11px] text-zinc-400 font-medium">
-                      Music · {audioTrackData.duration || "2:01"}
+                      Music · {audioTrackData.duration || "0:30"}
                     </p>
                   </div>
                 </div>
@@ -567,8 +554,9 @@ export function EditorSubpanel() {
                   {/* Solid Black Play / Pause Circle */}
                   <button
                     onClick={toggleAudioPreview}
-                    className="w-7 h-7 rounded-full bg-black text-white flex items-center justify-center shadow-xs hover:scale-105 active:scale-95 transition flex-shrink-0 cursor-pointer"
-                    title={isAudioPreviewPlaying ? "Pause preview" : "Play preview"}
+                    disabled={!audioTrackData.url}
+                    className="w-7 h-7 rounded-full bg-black text-white flex items-center justify-center shadow-xs hover:scale-105 active:scale-95 transition flex-shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={!audioTrackData.url ? "This audio is unavailable in this browser" : isAudioPreviewPlaying ? "Pause preview" : "Play preview"}
                   >
                     {isAudioPreviewPlaying ? (
                       <Pause className="w-3 h-3 fill-current" />
@@ -598,8 +586,8 @@ export function EditorSubpanel() {
 
                 {/* Time Display Row: 0:00 / 2:01 and in video 0:00 - 2:01 */}
                 <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 mb-3.5">
-                  <span>0:00 / {audioTrackData.duration || "2:01"}</span>
-                  <span>in video 0:00 - {audioTrackData.duration || "2:01"}</span>
+                  <span>0:00 / {audioTrackData.duration || "0:30"}</span>
+                  <span>in video 0:00 - {audioTrackData.duration || "0:30"}</span>
                 </div>
 
                 {/* Replace & Delete Buttons Row */}
@@ -874,6 +862,11 @@ export function EditorSubpanel() {
               </>
             )}
           </button>
+          {aiError && (
+            <p role="alert" className="mt-2 text-xs text-rose-600">
+              {aiError}
+            </p>
+          )}
         </div>
       )}
 

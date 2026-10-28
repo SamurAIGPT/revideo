@@ -9,7 +9,13 @@ function LoginContent() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || searchParams.get("next") || "/";
+  const requestedCallbackUrl = searchParams.get("callbackUrl") || searchParams.get("next") || "/";
+  const callbackUrl =
+    requestedCallbackUrl.startsWith("/") &&
+    !requestedCallbackUrl.startsWith("//") &&
+    !requestedCallbackUrl.includes("\\")
+      ? requestedCallbackUrl
+      : "/";
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -73,7 +79,7 @@ function LoginContent() {
           <ul className="text-[11px] text-zinc-600 space-y-1 pl-5 list-disc">
             <li>50 Free Starter Credits for AI script generation</li>
             <li>Supabase PostgreSQL table persistence for all projects</li>
-            <li>Seamless video repurpose, remixing, and export</li>
+            <li>Video repurpose and script remixing</li>
           </ul>
         </div>
 

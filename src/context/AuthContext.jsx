@@ -35,9 +35,11 @@ export function AuthProvider({ children }) {
   // Sync when NextAuth session status changes
   useEffect(() => {
     if (status === "authenticated" && session?.user) {
-      refreshSession();
+      const timer = setTimeout(() => refreshSession(), 0);
+      return () => clearTimeout(timer);
     } else if (status === "unauthenticated") {
-      refreshSession();
+      const timer = setTimeout(() => refreshSession(), 0);
+      return () => clearTimeout(timer);
     }
   }, [session, status, refreshSession]);
 
@@ -69,7 +71,6 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     setIsLoading(true);
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
       await signOut({ redirect: false });
       setUser(null);
       setCredits(0);
@@ -77,79 +78,6 @@ export function AuthProvider({ children }) {
       console.error("[AUTH] Logout error:", err);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  // Deduct credits handler (Atomic with rollback)
-  const deductCredits = async (amount = 5, reason = "AI Script Generation") => {
-    if (credits < amount) {
-      setIsTopUpOpen(true);
-      throw new Error(`Insufficient credits. You need ${amount} credits, but have ${credits}.`);
-    }
-
-    const previousCredits = credits;
-    // Optimistic UI update
-    setCredits((prev) => Math.max(0, prev - amount));
-
-    try {
-      const res = await fetch("/api/user/credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "deduct", amount, reason }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        // Rollback
-        setCredits(previousCredits);
-        if (data.insufficient) {
-          setIsTopUpOpen(true);
-        }
-        throw new Error(data.error || "Failed to deduct credits");
-      }
-
-      const newCredits = data.credits;
-      setCredits(newCredits);
-      setUser((prev) => (prev ? { ...prev, credits: newCredits } : prev));
-
-      // Broadcast update
-      window.dispatchEvent(
-        new CustomEvent("revid-credits-updated", { detail: { credits: newCredits } })
-      );
-
-      return { success: true, credits: newCredits };
-    } catch (err) {
-      setCredits(previousCredits);
-      throw err;
-    }
-  };
-
-  // Top Up Credits handler
-  const topUpCredits = async (amount = 100, packName = "Top Up") => {
-    try {
-      const res = await fetch("/api/user/credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "topup", amount, reason: packName }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to add credits");
-      }
-
-      const newCredits = data.credits;
-      setCredits(newCredits);
-      setUser((prev) => (prev ? { ...prev, credits: newCredits } : prev));
-
-      window.dispatchEvent(
-        new CustomEvent("revid-credits-updated", { detail: { credits: newCredits } })
-      );
-
-      return { success: true, credits: newCredits };
-    } catch (err) {
-      console.error("[TOPUP] Error:", err);
-      throw err;
     }
   };
 
@@ -168,8 +96,6 @@ export function AuthProvider({ children }) {
         login: loginWithGoogle,
         logout,
         refreshSession,
-        deductCredits,
-        topUpCredits,
       }}
     >
       {children}

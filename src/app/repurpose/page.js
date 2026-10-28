@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/home/Sidebar";
 import { CreateModal } from "@/components/home/CreateModal";
@@ -21,10 +21,11 @@ import {
   Check,
   ChevronDown,
 } from "lucide-react";
-import { saveProject } from "@/lib/supabase";
+import { useAuth } from "@/context/AuthContext";
 
 export default function RepurposePage() {
   const router = useRouter();
+  const { isAuthenticated, isLoading: authLoading, setIsLoginModalOpen, setIsTopUpOpen } = useAuth();
 
   // Navigation & Modals
   const [activeNav, setActiveNav] = useState("repurpose");
@@ -58,9 +59,17 @@ export default function RepurposePage() {
   const [loading, setLoading] = useState(true);
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
   const [remixingId, setRemixingId] = useState(null);
+  const fetchVideosRef = useRef(null);
 
   // Fetch Repurpose Videos from our live Next.js API
   const fetchVideos = async () => {
+    if (!isAuthenticated) {
+      setVideos([]);
+      setApiErrors([{ platform: "general", error: "Sign in to search live videos." }]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setApiErrors([]);
     try {
@@ -99,8 +108,14 @@ export default function RepurposePage() {
   };
 
   useEffect(() => {
-    fetchVideos();
-  }, [selectedPlatforms, minLikes, maxDuration]);
+    fetchVideosRef.current = fetchVideos;
+  });
+
+  useEffect(() => {
+    if (authLoading) return;
+    const timer = setTimeout(() => fetchVideosRef.current?.(), 0);
+    return () => clearTimeout(timer);
+  }, [selectedPlatforms, minLikes, maxDuration, authLoading, isAuthenticated]);
 
   // Format numbers for views/likes (e.g. 76k, 1m)
   const formatStat = (num) => {
@@ -121,6 +136,11 @@ export default function RepurposePage() {
 
   // Live Remix Video Action using MuAPI script generator
   const handleRemix = async (video) => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+
     setRemixingId(video.id);
     try {
       const res = await fetch("/api/repurpose/remix", {
@@ -134,17 +154,14 @@ export default function RepurposePage() {
         }),
       });
 
+      const data = await res.json();
       if (res.ok) {
-        const data = await res.json();
         if (data.scenes && data.scenes.length > 0) {
-          const newProjectId = `proj_remix_${Date.now()}`;
-          await saveProject({
-            id: newProjectId,
-            title: data.title || video.title || "Remixed Video",
-            scenes: data.scenes,
-            aspect_ratio: "9:16",
-            duration_seconds: 30,
-          });
+          if (Number.isInteger(data.credits)) {
+            window.dispatchEvent(
+              new CustomEvent("revid-credits-updated", { detail: { credits: data.credits } })
+            );
+          }
           sessionStorage.setItem(
             "revid_pending_remix",
             JSON.stringify({
@@ -152,18 +169,21 @@ export default function RepurposePage() {
               scenes: data.scenes,
             })
           );
-          router.push(`/editor/new?remix=active&projectId=${newProjectId}`);
+          router.push("/editor/new?remix=active");
           return;
         }
+      } else {
+        if (res.status === 401) setIsLoginModalOpen(true);
+        if (res.status === 402) setIsTopUpOpen(true);
+        throw new Error(data.error || "Failed to generate remix script");
       }
     } catch (err) {
       console.warn("Live remix error:", err);
+      alert(err.message || "Failed to generate remix script.");
+      return;
     } finally {
       setRemixingId(null);
     }
-
-    // Fallback to loading the video directly into editor
-    router.push(`/editor/new?template=${video.id}`);
   };
 
   // Open Create Modal
@@ -529,8 +549,8 @@ export default function RepurposePage() {
             <div className="text-center py-16 bg-white border border-zinc-200 rounded-3xl p-8 space-y-3">
               <p className="text-sm font-bold text-zinc-900">No videos found</p>
               <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-                No videos matched your active filters for "
-                {searchQuery || topics[0]}". Try clearing filters or searching
+                No videos matched your active filters for &quot;
+                {searchQuery || topics[0]}&quot;. Try clearing filters or searching
                 for another keyword.
               </p>
               <button
@@ -738,6 +758,7 @@ export default function RepurposePage() {
 
       {/* Create Modal */}
       <CreateModal
+        key={isCreateOpen ? JSON.stringify(createInitialData || {}) : "closed"}
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
         initialData={createInitialData}

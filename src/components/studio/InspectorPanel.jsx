@@ -462,7 +462,7 @@ export function InspectorPanel({
                 <span>Background Soundtrack</span>
               </label>
               <div className="space-y-2">
-                {MUSIC_TRACKS.map((track) => (
+                {MUSIC_TRACKS.filter((track) => track.id === "none" || track.url).map((track) => (
                   <button
                     key={track.id}
                     onClick={() => setMusicTrack(track.id)}
@@ -482,6 +482,9 @@ export function InspectorPanel({
                   </button>
                 ))}
               </div>
+              <p className="text-[10px] leading-relaxed text-zinc-500">
+                Built-in soundtrack files are not configured. Upload an audio file to add music.
+              </p>
             </div>
 
             {/* Volume Slider */}

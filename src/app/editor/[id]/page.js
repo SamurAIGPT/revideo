@@ -1,6 +1,7 @@
 "use client";
 
 import React, { use, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { VideoEditorProvider, useVideoEditor } from "@/context/VideoEditorContext";
 import { EditorHeader } from "@/components/editor/EditorHeader";
 import { EditorToolRail } from "@/components/editor/EditorToolRail";
@@ -32,6 +33,8 @@ function VideoEditorInner() {
     splitSceneAtPlayhead,
     setScenes,
     setProjectTitle,
+    isLoading,
+    projectLoadError,
   } = useVideoEditor();
 
   const [copiedLink, setCopiedLink] = React.useState(false);
@@ -82,6 +85,32 @@ function VideoEditorInner() {
       setTimeout(() => setCopiedLink(false), 2000);
     }
   };
+
+  if (isLoading || projectLoadError) {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center gap-3 bg-zinc-950 px-6 text-center text-white">
+        {projectLoadError ? (
+          <>
+            <p className="text-sm font-semibold">This project could not be loaded.</p>
+            <p className="max-w-md text-xs leading-relaxed text-zinc-400">
+              Editing is paused so the saved project is not replaced with an empty draft.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold hover:bg-emerald-500"
+            >
+              Try again
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+            <p className="text-xs font-mono text-zinc-400">Loading project...</p>
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-screen flex flex-col bg-white text-zinc-900 overflow-hidden select-none">
@@ -143,7 +172,7 @@ function VideoEditorInner() {
               </button>
             </div>
             <p className="text-xs text-zinc-500 mb-4">
-              Anyone with this link can view and remix this video project.
+              This is a private project link. Only you can open it while signed in.
             </p>
             <div className="flex items-center gap-2">
               <input
@@ -169,10 +198,18 @@ function VideoEditorInner() {
 
 function EditorPageContent({ params }) {
   const resolvedParams = use(params);
+  const searchParams = useSearchParams();
   const projectId = resolvedParams?.id;
 
   return (
-    <VideoEditorProvider initialProjectId={projectId}>
+    <VideoEditorProvider
+      initialProjectId={projectId}
+      initialIsNewProject={searchParams.get("new") === "1"}
+      initialPrompt={searchParams.get("prompt")}
+      initialTemplateId={searchParams.get("template")}
+      initialRemix={searchParams.get("remix") === "active"}
+      initialDuration={searchParams.get("duration")}
+    >
       <VideoEditorInner />
     </VideoEditorProvider>
   );

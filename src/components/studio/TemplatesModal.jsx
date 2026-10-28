@@ -69,7 +69,7 @@ export function TemplatesModal({ isOpen, onClose, onLoadTemplate }) {
                       {tpl.title}
                     </h4>
                     <p className="text-xs text-zinc-400 line-clamp-1">
-                      "{tpl.scenes[0]?.narration}"
+                      &quot;{tpl.scenes[0]?.narration}&quot;
                     </p>
                   </div>
                 </div>

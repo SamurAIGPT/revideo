@@ -1,17 +1,24 @@
 "use client";
 
-import React, { useEffect, Suspense } from "react";
+import React, { useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 function NewEditorInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const didRedirect = useRef(false);
 
   useEffect(() => {
-    // Generate unique project ID
-    const uniqueId = `proj-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    const params = searchParams.toString();
-    const destination = params ? `/editor/${uniqueId}?${params}` : `/editor/${uniqueId}`;
+    if (didRedirect.current) return;
+    didRedirect.current = true;
+
+    const query = new URLSearchParams(searchParams.toString());
+    const requestedProjectId = query.get("projectId");
+    query.delete("projectId");
+    const projectId = requestedProjectId || `proj-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    if (!requestedProjectId) query.set("new", "1");
+    const params = query.toString();
+    const destination = params ? `/editor/${projectId}?${params}` : `/editor/${projectId}`;
     router.replace(destination);
   }, [router, searchParams]);
 

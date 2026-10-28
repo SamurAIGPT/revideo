@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Search,
@@ -20,9 +20,11 @@ import {
   AlertCircle,
   RefreshCw,
 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 
 export function HomeFeed({ onOpenCreate, onRemixVideo, onNavigateRepurpose }) {
   const router = useRouter();
+  const { isAuthenticated, isLoading: authLoading, setIsLoginModalOpen, setIsTopUpOpen } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("viral"); // 'viral' | 'ads'
   const [bookmarked, setBookmarked] = useState({});
@@ -31,13 +33,21 @@ export function HomeFeed({ onOpenCreate, onRemixVideo, onNavigateRepurpose }) {
   const [apiError, setApiError] = useState(null);
   const [remixingId, setRemixingId] = useState(null);
 
-  const fetchTrendingVideos = async () => {
+  const fetchTrendingVideos = useCallback(async () => {
+    if (!isAuthenticated) {
+      setTrendingVideos([]);
+      setApiError("Sign in to load live trending videos.");
+      setLoadingVideos(false);
+      return;
+    }
+
     setLoadingVideos(true);
     setApiError(null);
     try {
       const res = await fetch("/api/repurpose/videos?q=viral&platform=youtube,tiktok,instagram");
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 401) setIsLoginModalOpen(true);
         throw new Error(data.error || "Failed to load trending videos from server");
       }
       setTrendingVideos(data.videos || []);
@@ -51,13 +61,20 @@ export function HomeFeed({ onOpenCreate, onRemixVideo, onNavigateRepurpose }) {
     } finally {
       setLoadingVideos(false);
     }
-  };
+  }, [isAuthenticated, setIsLoginModalOpen]);
 
   useEffect(() => {
-    fetchTrendingVideos();
-  }, []);
+    if (authLoading) return;
+    const timer = setTimeout(() => fetchTrendingVideos(), 0);
+    return () => clearTimeout(timer);
+  }, [authLoading, fetchTrendingVideos]);
 
   const handleRemixLive = async (video) => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+
     setRemixingId(video.id);
     try {
       const res = await fetch("/api/repurpose/remix", {
@@ -72,12 +89,22 @@ export function HomeFeed({ onOpenCreate, onRemixVideo, onNavigateRepurpose }) {
         }),
       });
       const data = await res.json();
-      if (res.ok && data.script) {
+      if (res.ok && data.script && Array.isArray(data.scenes) && data.scenes.length > 0) {
+        if (Number.isInteger(data.credits)) {
+          window.dispatchEvent(
+            new CustomEvent("revid-credits-updated", { detail: { credits: data.credits } })
+          );
+        }
         if (typeof window !== "undefined") {
-          sessionStorage.setItem("revid_pending_remix", JSON.stringify(data.script));
+          sessionStorage.setItem(
+            "revid_pending_remix",
+            JSON.stringify({ title: data.title || video.title, scenes: data.scenes })
+          );
         }
         router.push("/editor/new?remix=active");
       } else {
+        if (res.status === 401) setIsLoginModalOpen(true);
+        if (res.status === 402) setIsTopUpOpen(true);
         alert(`Failed to remix video: ${data.error || "Unknown error"}`);
       }
     } catch (err) {
@@ -217,7 +244,7 @@ export function HomeFeed({ onOpenCreate, onRemixVideo, onNavigateRepurpose }) {
                   alt=""
                 />
               </div>
-              <span className="text-xs">Browse what's trending</span>
+              <span className="text-xs">Browse what&apos;s trending</span>
               <ArrowRight className="w-3 h-3" />
             </div>
           </div>

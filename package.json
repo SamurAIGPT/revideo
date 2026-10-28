@@ -13,7 +13,6 @@
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "@remotion/player": "^4.0.539",
-    "@supabase/supabase-js": "^2.118.0",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "lucide-react": "^1.61.0",

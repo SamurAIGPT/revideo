@@ -24,9 +24,16 @@ import {
 } from "lucide-react";
 import { Sidebar } from "@/components/home/Sidebar";
 import { CreateModal } from "@/components/home/CreateModal";
+import { useAuth } from "@/context/AuthContext";
+
+function savedVideoKey(video) {
+  const platform = String(video.platform || "youtube").toLowerCase();
+  return `${platform}:${String(video.videoId ?? video.id)}`;
+}
 
 export default function RevidSearchPage() {
   const router = useRouter();
+  const { isAuthenticated, isLoading: authLoading, setIsLoginModalOpen, setIsTopUpOpen } = useAuth();
 
   // Search & Navigation States
   const [activeTab, setActiveTab] = useState("viral"); // "viral" | "ads"
@@ -76,20 +83,24 @@ export default function RevidSearchPage() {
   // Hydrate bookmarks from PostgreSQL database table
   useEffect(() => {
     async function loadSavedVideos() {
+      if (!isAuthenticated) {
+        setBookmarkedIds(new Set());
+        return;
+      }
       try {
         const res = await fetch("/api/saved-videos");
         if (res.ok) {
           const data = await res.json();
           if (data.videos) {
-            setBookmarkedIds(new Set(data.videos.map((v) => String(v.videoId))));
+            setBookmarkedIds(new Set(data.videos.map(savedVideoKey)));
           }
         }
       } catch (err) {
         console.error("Failed to load saved videos:", err);
       }
     }
-    loadSavedVideos();
-  }, []);
+    if (!authLoading) loadSavedVideos();
+  }, [authLoading, isAuthenticated]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -98,32 +109,42 @@ export default function RevidSearchPage() {
 
   const toggleBookmark = async (video, e) => {
     e.stopPropagation();
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+
     const id = String(video.id);
-    const isCurrentlySaved = bookmarkedIds.has(id);
+    const platform = String(video.platform || "youtube").toLowerCase();
+    const key = savedVideoKey(video);
+    const isCurrentlySaved = bookmarkedIds.has(key);
 
     setBookmarkedIds((prev) => {
       const next = new Set(prev);
       if (isCurrentlySaved) {
-        next.delete(id);
+        next.delete(key);
       } else {
-        next.add(id);
+        next.add(key);
       }
       return next;
     });
 
     if (isCurrentlySaved) {
-      showToast("Removed from saved collection");
       try {
-        await fetch(`/api/saved-videos?videoId=${encodeURIComponent(id)}`, {
+        const res = await fetch(`/api/saved-videos?videoId=${encodeURIComponent(id)}&platform=${encodeURIComponent(platform)}`, {
           method: "DELETE",
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.error || "Could not remove saved video");
+        showToast("Removed from saved collection");
       } catch (err) {
         console.error("Error removing saved video:", err);
+        setBookmarkedIds((prev) => new Set(prev).add(key));
+        showToast("Could not update saved collection");
       }
     } else {
-      showToast("Saved to your collection!");
       try {
-        await fetch("/api/saved-videos", {
+        const res = await fetch("/api/saved-videos", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -136,8 +157,17 @@ export default function RevidSearchPage() {
             videoUrl: video.videoUrl || "",
           }),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.error || "Could not save video");
+        showToast("Saved to your collection!");
       } catch (err) {
         console.error("Error saving video to database:", err);
+        setBookmarkedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        showToast("Could not update saved collection");
       }
     }
   };
@@ -149,6 +179,10 @@ export default function RevidSearchPage() {
 
     if (!queryToUse.trim()) {
       showToast("Please enter a topic or keyword to search");
+      return;
+    }
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
       return;
     }
 
@@ -177,6 +211,7 @@ export default function RevidSearchPage() {
 
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 401) setIsLoginModalOpen(true);
         throw new Error(data.error || "Failed to search viral videos");
       }
 
@@ -195,6 +230,11 @@ export default function RevidSearchPage() {
 
   // Remix Video Action: generate script via MuAPI and navigate to /studio
   const handleRemix = async (video) => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+
     setRemixingId(video.id);
     try {
       const res = await fetch("/api/repurpose/remix", {
@@ -210,12 +250,22 @@ export default function RevidSearchPage() {
       });
 
       const data = await res.json();
-      if (res.ok && data.script) {
+      if (res.ok && data.script && Array.isArray(data.scenes) && data.scenes.length > 0) {
+        if (Number.isInteger(data.credits)) {
+          window.dispatchEvent(
+            new CustomEvent("revid-credits-updated", { detail: { credits: data.credits } })
+          );
+        }
         if (typeof window !== "undefined") {
-          sessionStorage.setItem("revid_pending_remix", JSON.stringify(data.script));
+          sessionStorage.setItem(
+            "revid_pending_remix",
+            JSON.stringify({ title: data.title || video.title, scenes: data.scenes })
+          );
         }
         router.push("/editor/new?remix=active");
       } else {
+        if (res.status === 401) setIsLoginModalOpen(true);
+        if (res.status === 402) setIsTopUpOpen(true);
         alert(`Failed to remix video: ${data.error || "MuAPI generation issue"}`);
       }
     } catch (err) {
@@ -689,7 +739,7 @@ export default function RevidSearchPage() {
 
                 <div className="space-y-1">
                   <h3 className="text-base font-bold text-zinc-900">
-                    Discover what's working right now
+                    Discover what&apos;s working right now
                   </h3>
                   <p className="text-xs text-zinc-500 max-w-md mx-auto">
                     Type any niche, startup keyword, or topic in the box above to find high-performing videos, or pick one of the quick suggestions.
@@ -704,7 +754,7 @@ export default function RevidSearchPage() {
             <div className="text-center py-16 bg-white border border-zinc-200 rounded-3xl p-8 space-y-3">
               <p className="text-sm font-bold text-zinc-900">No videos found</p>
               <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-                No videos matched your active filters for "{searchQuery}". Try adjusting your filters or searching for another keyword.
+                No videos matched your active filters for &quot;{searchQuery}&quot;. Try adjusting your filters or searching for another keyword.
               </p>
               <button
                 onClick={() => {
@@ -724,7 +774,7 @@ export default function RevidSearchPage() {
               {videos.map((video) => {
                 const isHovered = hoveredVideoId === video.id;
                 const isRemixing = remixingId === video.id;
-                const isSaved = bookmarkedIds.has(String(video.id));
+                const isSaved = bookmarkedIds.has(savedVideoKey(video));
 
                 return (
                   <div
@@ -822,6 +872,7 @@ export default function RevidSearchPage() {
 
       {/* Create Modal */}
       <CreateModal
+        key={isCreateOpen ? JSON.stringify(createInitialData || {}) : "closed"}
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
         initialData={{ prompt: searchQuery }}

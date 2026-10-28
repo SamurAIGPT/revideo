@@ -1,39 +1,51 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
-import { VIRAL_REMIX_CARDS, BACKGROUND_MEDIA, MUSIC_TRACKS, CAPTION_STYLES } from "@/lib/constants";
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { VIRAL_REMIX_CARDS, BACKGROUND_MEDIA, CAPTION_STYLES } from "@/lib/constants";
+import { useAuth } from "@/context/AuthContext";
+import { editorAssetReference, getEditorAsset, storeEditorAsset } from "@/lib/editor-assets";
 
 const VideoEditorContext = createContext(null);
 
-export function VideoEditorProvider({ initialProjectId, children }) {
+export function VideoEditorProvider({
+  initialProjectId,
+  initialIsNewProject,
+  initialPrompt,
+  initialTemplateId,
+  initialRemix,
+  initialDuration,
+  children,
+}) {
   const fps = 30;
   const initialTemplate = VIRAL_REMIX_CARDS[0];
+  const {
+    isAuthenticated,
+    isLoading: authLoading,
+    setIsLoginModalOpen,
+    setIsTopUpOpen,
+  } = useAuth();
 
   // Core Project State
-  const [projectId, setProjectId] = useState(initialProjectId || `proj-${Date.now()}`);
+  const [projectId, setProjectId] = useState(initialProjectId || "draft");
   const [projectTitle, setProjectTitle] = useState("Sonic Cinema");
   const [aspectRatio, setAspectRatio] = useState("9:16");
   const [captionStyle, setCaptionStyle] = useState("hormozi");
-  const [musicTrack, setMusicTrack] = useState("lofi");
+  const [musicTrack, setMusicTrack] = useState("none");
   const [musicVolume, setMusicVolume] = useState(0.25);
   const [voice, setVoice] = useState("marcus");
   const [scenes, setScenes] = useState([]);
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
 
   // Audio Track State (Matching Revid AI Screenshot 2)
-  const [audioTrackData, setAudioTrackData] = useState({
-    id: "audio-default",
-    name: "1793086207095-audio.mp3",
-    duration: "2:01",
-    durationSeconds: 121.34,
-    url: "/music/lofi.mp3",
-    type: "Music",
-  });
+  const [audioTrackData, setAudioTrackData] = useState(null);
   const [isAudioPreviewPlaying, setIsAudioPreviewPlaying] = useState(false);
   const audioPreviewAudioRef = useRef(null);
+  const ownedAssetUrls = useRef(new Set());
 
   // Media Library State (Matching Revid AI Screenshot 1)
   const [mediaLibrary, setMediaLibrary] = useState([]);
+  const [mediaUploadError, setMediaUploadError] = useState("");
+  const [mediaWarning, setMediaWarning] = useState("");
   const [mediaTab, setMediaTab] = useState("library"); // 'library' | 'stock' | 'stickers' | 'effects'
   const [mediaFilter, setMediaFilter] = useState("all"); // 'all' | 'videos' | 'images' | 'audio' | 'motion'
 
@@ -53,9 +65,12 @@ export function VideoEditorProvider({ initialProjectId, children }) {
   const [activeTool, setActiveTool] = useState("media");
 
   // Cloud Save State
-  const [saveStatus, setSaveStatus] = useState("saved"); // 'saved' | 'saving' | 'unsaved' | 'error'
+  const [saveState, setSaveState] = useState("unsaved"); // 'saved' | 'saving' | 'unsaved' | 'error'
   const [lastSavedAt, setLastSavedAt] = useState(null);
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [projectLoadError, setProjectLoadError] = useState(false);
+  const initialContentProcessed = useRef(false);
 
   // Modals
   const [isExportOpen, setIsExportOpen] = useState(false);
@@ -67,12 +82,52 @@ export function VideoEditorProvider({ initialProjectId, children }) {
   const [redoStack, setRedoStack] = useState([]);
   const isInternalChange = useRef(false);
 
+  useEffect(() => () => {
+    if (audioPreviewAudioRef.current) audioPreviewAudioRef.current.pause();
+    for (const url of ownedAssetUrls.current) URL.revokeObjectURL(url);
+    ownedAssetUrls.current.clear();
+  }, []);
+
   // Compute Total Duration (defaults to audio duration 02:01.34 matching screenshot when scenes is empty)
   const totalSeconds =
     scenes.length > 0
       ? scenes.reduce((acc, s) => acc + (Number(s.durationSeconds) || 5), 0)
-      : (audioTrackData?.durationSeconds || 121.34);
+      : (audioTrackData?.durationSeconds || 30);
   const durationInFrames = Math.max(fps, Math.round(totalSeconds * fps));
+  const projectPayload = useMemo(() => ({
+    id: projectId,
+    title: projectTitle,
+    aspectRatio,
+    captionStyle,
+    musicTrack,
+    musicVolume,
+    voice,
+    scenes: scenes.map((scene) => {
+      const current = scene && typeof scene === "object" ? scene : {};
+      return {
+        ...current,
+        videoUrl: current.videoAssetId
+          ? editorAssetReference(current.videoAssetId)
+          : typeof current.videoUrl === "string" && current.videoUrl.startsWith("blob:") ? "" : current.videoUrl,
+        imageUrl: current.imageAssetId
+          ? editorAssetReference(current.imageAssetId)
+          : typeof current.imageUrl === "string" && current.imageUrl.startsWith("blob:") ? "" : current.imageUrl,
+      };
+    }),
+    audioTrackData: audioTrackData
+      ? {
+          ...audioTrackData,
+          url: audioTrackData.assetId
+            ? editorAssetReference(audioTrackData.assetId)
+            : typeof audioTrackData.url === "string" && audioTrackData.url.startsWith("blob:") ? "" : audioTrackData.url,
+        }
+      : null,
+    durationSeconds: totalSeconds,
+  }), [projectId, projectTitle, aspectRatio, captionStyle, musicTrack, musicVolume, voice, scenes, audioTrackData, totalSeconds]);
+  const projectSnapshot = JSON.stringify(projectPayload);
+  const saveStatus = saveState === "saved" && lastSavedSnapshot !== projectSnapshot
+    ? "unsaved"
+    : saveState;
 
   // Snapshot current state for history
   const takeSnapshot = useCallback(() => {
@@ -82,10 +137,11 @@ export function VideoEditorProvider({ initialProjectId, children }) {
       captionStyle,
       musicTrack,
       musicVolume,
+      audioTrackData: audioTrackData ? { ...audioTrackData } : null,
       voice,
       scenes: JSON.parse(JSON.stringify(scenes)),
     };
-  }, [projectTitle, aspectRatio, captionStyle, musicTrack, musicVolume, voice, scenes]);
+  }, [projectTitle, aspectRatio, captionStyle, musicTrack, musicVolume, audioTrackData, voice, scenes]);
 
   const pushHistory = useCallback(() => {
     if (isInternalChange.current) return;
@@ -105,6 +161,10 @@ export function VideoEditorProvider({ initialProjectId, children }) {
     if (previous.captionStyle !== undefined) setCaptionStyle(previous.captionStyle);
     if (previous.musicTrack !== undefined) setMusicTrack(previous.musicTrack);
     if (previous.musicVolume !== undefined) setMusicVolume(previous.musicVolume);
+    if (audioPreviewAudioRef.current) audioPreviewAudioRef.current.pause();
+    audioPreviewAudioRef.current = null;
+    setIsAudioPreviewPlaying(false);
+    if (previous.audioTrackData !== undefined) setAudioTrackData(previous.audioTrackData);
     if (previous.voice !== undefined) setVoice(previous.voice);
     if (previous.scenes !== undefined) setScenes(previous.scenes);
     setTimeout(() => {
@@ -124,6 +184,10 @@ export function VideoEditorProvider({ initialProjectId, children }) {
     if (next.captionStyle !== undefined) setCaptionStyle(next.captionStyle);
     if (next.musicTrack !== undefined) setMusicTrack(next.musicTrack);
     if (next.musicVolume !== undefined) setMusicVolume(next.musicVolume);
+    if (audioPreviewAudioRef.current) audioPreviewAudioRef.current.pause();
+    audioPreviewAudioRef.current = null;
+    setIsAudioPreviewPlaying(false);
+    if (next.audioTrackData !== undefined) setAudioTrackData(next.audioTrackData);
     if (next.voice !== undefined) setVoice(next.voice);
     if (next.scenes !== undefined) setScenes(next.scenes);
     setTimeout(() => {
@@ -131,35 +195,186 @@ export function VideoEditorProvider({ initialProjectId, children }) {
     }, 50);
   }, [redoStack, takeSnapshot]);
 
-  // Load project by ID on mount
+  // Load an existing project or initialize content passed from the create/remix flows.
   useEffect(() => {
+    if (authLoading) return;
+
     let isMounted = true;
+    async function restoreAssetUrl(value) {
+      if (typeof value !== "string" || !value) return { url: "", missing: false, asset: null };
+      const prefix = "revideo-asset://";
+      const assetId = value.startsWith(prefix) ? value.slice(prefix.length) : null;
+      if (!assetId) {
+        return value.startsWith("blob:")
+          ? { url: "", missing: true, asset: null }
+          : { url: value, missing: false, asset: null };
+      }
+
+      const asset = await getEditorAsset(assetId).catch(() => null);
+      if (!asset?.blob) return { url: "", missing: true, asset: null };
+      const url = URL.createObjectURL(asset.blob);
+      ownedAssetUrls.current.add(url);
+      return { url, missing: false, asset };
+    }
+
     async function loadProject() {
-      if (!initialProjectId) {
-        setIsLoading(false);
+      setIsLoading(true);
+      setProjectLoadError(false);
+      setMediaWarning("");
+
+      if (!isAuthenticated) {
+        if (initialPrompt) setIsLoginModalOpen(true);
+        if (isMounted) setIsLoading(false);
         return;
       }
-      setIsLoading(true);
+
       try {
-        const res = await fetch(`/api/projects/${initialProjectId}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && data.project && isMounted) {
-            const p = data.project;
-            setProjectId(p.id);
-            if (p.title) setProjectTitle(p.title);
-            if (p.aspectRatio || p.aspect_ratio) setAspectRatio(p.aspectRatio || p.aspect_ratio);
-            if (p.captionStyle || p.caption_style) setCaptionStyle(p.captionStyle || p.caption_style);
-            if (p.musicTrack || p.music_track) setMusicTrack(p.musicTrack || p.music_track);
-            if (p.musicVolume !== undefined) setMusicVolume(Number(p.musicVolume));
-            if (p.voice) setVoice(p.voice);
-            if (Array.isArray(p.scenes) && p.scenes.length > 0) {
-              setScenes(p.scenes);
+        if (initialProjectId && !initialIsNewProject) {
+          const res = await fetch(`/api/projects/${initialProjectId}`, { cache: "no-store" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success || !data.project) {
+            throw new Error("Could not load this saved project.");
+          }
+
+          const p = data.project;
+          let missingAsset = false;
+          const restoredSceneResults = await Promise.all((Array.isArray(p.scenes) ? p.scenes : []).map(async (scene) => {
+            const savedScene = scene && typeof scene === "object" && !Array.isArray(scene) ? scene : {};
+            const [video, image] = await Promise.all([
+              restoreAssetUrl(savedScene.videoUrl),
+              restoreAssetUrl(savedScene.imageUrl),
+            ]);
+            missingAsset ||= video.missing || image.missing;
+            return {
+              scene: { ...savedScene, videoUrl: video.url, imageUrl: image.url },
+              videoAsset: video.asset,
+              imageAsset: image.asset,
+            };
+          }));
+          const restoredScenes = restoredSceneResults.map((result) => result.scene);
+          const restoredMedia = new Map();
+          restoredSceneResults.forEach((result) => {
+            if (result.videoAsset) {
+              restoredMedia.set(result.videoAsset.id, {
+                id: result.videoAsset.id,
+                assetId: result.videoAsset.id,
+                title: result.videoAsset.name,
+                category: "Uploaded",
+                type: "video",
+                url: result.scene.videoUrl,
+                poster: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80",
+              });
+            }
+            if (result.imageAsset) {
+              restoredMedia.set(result.imageAsset.id, {
+                id: result.imageAsset.id,
+                assetId: result.imageAsset.id,
+                title: result.imageAsset.name,
+                category: "Uploaded",
+                type: "image",
+                url: result.scene.imageUrl,
+                poster: result.scene.imageUrl,
+              });
+            }
+          });
+
+          let restoredAudio = p.audioTrackData || null;
+          if (restoredAudio?.url) {
+            const audio = await restoreAssetUrl(restoredAudio.url);
+            missingAsset ||= audio.missing;
+            restoredAudio = { ...restoredAudio, url: audio.url };
+            if (audio.asset) {
+              restoredMedia.set(audio.asset.id, {
+                id: audio.asset.id,
+                assetId: audio.asset.id,
+                title: audio.asset.name,
+                category: "Uploaded",
+                type: "audio",
+                url: audio.url,
+                poster: "",
+              });
+            }
+          }
+
+          if (!isMounted) return;
+          setProjectId(p.id);
+          if (p.title) setProjectTitle(p.title);
+          if (p.aspectRatio || p.aspect_ratio) setAspectRatio(p.aspectRatio || p.aspect_ratio);
+          if (p.captionStyle || p.caption_style) setCaptionStyle(p.captionStyle || p.caption_style);
+          setMusicTrack(restoredAudio ? (p.musicTrack || p.music_track || "none") : "none");
+          if (p.musicVolume !== undefined) setMusicVolume(Number(p.musicVolume));
+          if (p.voice) setVoice(p.voice);
+          setScenes(restoredScenes);
+          setMediaLibrary([...restoredMedia.values()]);
+          if (audioPreviewAudioRef.current) audioPreviewAudioRef.current.pause();
+          audioPreviewAudioRef.current = null;
+          setIsAudioPreviewPlaying(false);
+          setAudioTrackData(restoredAudio);
+          initialContentProcessed.current = true;
+          if (missingAsset) {
+            setMediaWarning("Some uploaded media is available only on the browser where it was added. Reupload it here to restore it.");
+          }
+          return;
+        }
+
+        if (!isMounted || initialContentProcessed.current) return;
+        initialContentProcessed.current = true;
+
+        if (initialRemix && typeof window !== "undefined") {
+          const pendingRemix = sessionStorage.getItem("revid_pending_remix");
+          if (pendingRemix) {
+            const remix = JSON.parse(pendingRemix);
+            if (Array.isArray(remix.scenes) && remix.scenes.length > 0) {
+              setProjectTitle(remix.title || "Remixed Video");
+              setScenes(remix.scenes);
+              sessionStorage.removeItem("revid_pending_remix");
+              return;
+            }
+          }
+        }
+
+        if (initialTemplateId) {
+          const template = VIRAL_REMIX_CARDS.find((item) => item.id === initialTemplateId);
+          if (template) {
+            setProjectTitle(template.title);
+            setScenes(template.scenes);
+            setAspectRatio(template.aspectRatio || "9:16");
+            return;
+          }
+        }
+
+        if (initialPrompt) {
+          const duration = Number(initialDuration) || 30;
+          const res = await fetch("/api/generate-script", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: initialPrompt, duration }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (res.status === 401) setIsLoginModalOpen(true);
+            if (res.status === 402) setIsTopUpOpen(true);
+            throw new Error(data.error || "Failed to generate script");
+          }
+          if (!Array.isArray(data.scenes) || data.scenes.length === 0) {
+            throw new Error("The script service returned no scenes.");
+          }
+          if (isMounted) {
+            setProjectTitle(data.title || "New Video");
+            setScenes(data.scenes);
+            if (Number.isInteger(data.credits)) {
+              window.dispatchEvent(
+                new CustomEvent("revid-credits-updated", { detail: { credits: data.credits } })
+              );
             }
           }
         }
       } catch (err) {
-        console.warn("Could not fetch project from DB, using fallback draft:", err);
+        console.warn("Could not initialize editor content:", err);
+        if (isMounted && ((initialProjectId && !initialIsNewProject) || initialPrompt || initialRemix)) {
+          setProjectLoadError(true);
+          setSaveState("error");
+        }
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -169,45 +384,47 @@ export function VideoEditorProvider({ initialProjectId, children }) {
     return () => {
       isMounted = false;
     };
-  }, [initialProjectId]);
+  }, [
+    initialProjectId,
+    initialIsNewProject,
+    initialPrompt,
+    initialTemplateId,
+    initialRemix,
+    initialDuration,
+    isAuthenticated,
+    authLoading,
+    setIsLoginModalOpen,
+    setIsTopUpOpen,
+  ]);
 
   // Autosave engine (debounced 1000ms)
   useEffect(() => {
-    if (isLoading) return;
-    setSaveStatus("saving");
+    if (isLoading || authLoading || !isAuthenticated || projectLoadError) return;
 
     const timer = setTimeout(async () => {
+      setSaveState("saving");
       try {
         const res = await fetch(`/api/projects/${projectId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: projectId,
-            title: projectTitle,
-            aspectRatio,
-            captionStyle,
-            musicTrack,
-            musicVolume,
-            voice,
-            scenes,
-            durationSeconds: totalSeconds,
-          }),
+          body: projectSnapshot,
         });
 
         if (res.ok) {
-          setSaveStatus("saved");
+          setLastSavedSnapshot(projectSnapshot);
+          setSaveState("saved");
           setLastSavedAt(new Date());
         } else {
-          setSaveStatus("saved"); // Fallback to draft
+          setSaveState("error");
         }
       } catch (err) {
         console.warn("Autosave local fallback:", err);
-        setSaveStatus("saved");
+        setSaveState("error");
       }
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [projectId, projectTitle, aspectRatio, captionStyle, musicTrack, musicVolume, voice, scenes, totalSeconds, isLoading]);
+  }, [projectId, projectPayload, projectSnapshot, isLoading, authLoading, isAuthenticated, projectLoadError]);
 
   // Scene manipulation methods
   const addScene = useCallback((index = null) => {
@@ -298,8 +515,8 @@ export function VideoEditorProvider({ initialProjectId, children }) {
     const offsetFrames = currentFrame - accFrames;
     const offsetSeconds = offsetFrames / fps;
 
-    // Minimum split threshold (0.5s from start and end)
-    if (offsetSeconds <= 0.5 || offsetSeconds >= (currentScene.durationSeconds - 0.5)) {
+    // Keep both resulting scenes at least one second long.
+    if (offsetSeconds <= 1 || offsetSeconds >= (currentScene.durationSeconds - 1)) {
       return;
     }
 
@@ -380,14 +597,26 @@ export function VideoEditorProvider({ initialProjectId, children }) {
   }, [currentFrame, durationInFrames]);
 
   // Upload Media handler
-  const uploadMedia = useCallback((file) => {
+  const uploadMedia = useCallback(async (file) => {
     if (!file) return;
     const isVideo = file.type.startsWith("video");
     const isAudio = file.type.startsWith("audio");
+    const assetId = `asset-${globalThis.crypto.randomUUID()}`;
+    setMediaUploadError("");
+    try {
+      await storeEditorAsset(assetId, file);
+    } catch (err) {
+      console.error("Could not store uploaded media:", err);
+      setMediaUploadError("This file could not be saved in this browser. Check available storage and try again.");
+      return;
+    }
+
     const objectUrl = URL.createObjectURL(file);
+    ownedAssetUrls.current.add(objectUrl);
 
     const newMedia = {
-      id: `media-${Date.now()}`,
+      id: assetId,
+      assetId,
       title: file.name,
       category: "Uploaded",
       type: isVideo ? "video" : isAudio ? "audio" : "image",
@@ -409,6 +638,8 @@ export function VideoEditorProvider({ initialProjectId, children }) {
               visualId: "uploaded",
               videoUrl: isVideo ? objectUrl : "",
               imageUrl: !isVideo ? objectUrl : "",
+              videoAssetId: isVideo ? assetId : undefined,
+              imageAssetId: !isVideo ? assetId : undefined,
               durationSeconds: 15,
             },
           ];
@@ -419,13 +650,19 @@ export function VideoEditorProvider({ initialProjectId, children }) {
           ...updated[idx],
           videoUrl: isVideo ? objectUrl : "",
           imageUrl: !isVideo ? objectUrl : "",
+          videoAssetId: isVideo ? assetId : undefined,
+          imageAssetId: !isVideo ? assetId : undefined,
         };
         return updated;
       });
       setCurrentSceneIndex(0);
     } else if (isAudio) {
+      if (audioPreviewAudioRef.current) audioPreviewAudioRef.current.pause();
+      audioPreviewAudioRef.current = null;
+      setIsAudioPreviewPlaying(false);
       setAudioTrackData({
-        id: `audio-${Date.now()}`,
+        id: `audio-${assetId}`,
+        assetId,
         name: file.name,
         duration: "0:30",
         durationSeconds: 30,
@@ -439,41 +676,32 @@ export function VideoEditorProvider({ initialProjectId, children }) {
   // Audio actions
   const toggleAudioPreview = useCallback(() => {
     if (!audioTrackData) return;
-    if (!audioPreviewAudioRef.current) {
-      audioPreviewAudioRef.current = new window.Audio(audioTrackData.url || "/music/lofi.mp3");
-      audioPreviewAudioRef.current.onended = () => setIsAudioPreviewPlaying(false);
+    if (isAudioPreviewPlaying) {
+      audioPreviewAudioRef.current?.pause();
+      audioPreviewAudioRef.current = null;
+      setIsAudioPreviewPlaying(false);
+      return;
     }
 
-    if (isAudioPreviewPlaying) {
-      audioPreviewAudioRef.current.pause();
+    if (!audioTrackData.url) return;
+    const audio = new window.Audio(audioTrackData.url);
+    audioPreviewAudioRef.current = audio;
+    audio.onended = () => setIsAudioPreviewPlaying(false);
+    audio.onerror = () => {
       setIsAudioPreviewPlaying(false);
-    } else {
-      audioPreviewAudioRef.current.play().catch(() => {
-        // Fallback Web Audio oscillator if audio file cannot be decoded
-        try {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (AudioContext) {
-            const ctx = new AudioContext();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.frequency.setValueAtTime(300, ctx.currentTime);
-            gain.gain.setValueAtTime(0.1, ctx.currentTime);
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 2);
-          }
-        } catch (e) {}
-      });
-      setIsAudioPreviewPlaying(true);
-      setTimeout(() => setIsAudioPreviewPlaying(false), 2500);
-    }
+      setMediaUploadError("This audio file could not be previewed. Try uploading it again.");
+    };
+    audio.play().then(() => setIsAudioPreviewPlaying(true)).catch(() => {
+      setIsAudioPreviewPlaying(false);
+      setMediaUploadError("This audio file could not be previewed. Try uploading it again.");
+    });
   }, [audioTrackData, isAudioPreviewPlaying]);
 
   const deleteAudio = useCallback(() => {
     pushHistory();
     if (audioPreviewAudioRef.current) {
       audioPreviewAudioRef.current.pause();
+      audioPreviewAudioRef.current = null;
     }
     setIsAudioPreviewPlaying(false);
     setAudioTrackData(null);
@@ -484,6 +712,7 @@ export function VideoEditorProvider({ initialProjectId, children }) {
     pushHistory();
     if (audioPreviewAudioRef.current) {
       audioPreviewAudioRef.current.pause();
+      audioPreviewAudioRef.current = null;
     }
     setIsAudioPreviewPlaying(false);
     setAudioTrackData(newAudio);
@@ -528,6 +757,8 @@ export function VideoEditorProvider({ initialProjectId, children }) {
         // Media Library & Audio Tracks (Revid AI Matching)
         mediaLibrary,
         setMediaLibrary,
+        mediaUploadError,
+        mediaWarning,
         mediaTab,
         setMediaTab,
         mediaFilter,
@@ -592,6 +823,7 @@ export function VideoEditorProvider({ initialProjectId, children }) {
         saveStatus,
         lastSavedAt,
         isLoading,
+        projectLoadError,
       }}
     >
       {children}

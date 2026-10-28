@@ -1,9 +1,13 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useSyncExternalStore } from "react";
 import { Player } from "@remotion/player";
 import { RevidVideoComposition } from "./RevidVideoComposition";
-import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Sparkles } from "lucide-react";
+import { Play, Pause, RotateCcw, Volume2, VolumeX, Sparkles } from "lucide-react";
+
+const subscribeToMount = () => () => {};
+const getClientMountSnapshot = () => true;
+const getServerMountSnapshot = () => false;
 
 export function PlayerWrapper({
   scenes = [],
@@ -14,14 +18,14 @@ export function PlayerWrapper({
   currentSceneIndex = 0,
   onSeekScene,
 }) {
-  const [isMounted, setIsMounted] = useState(false);
+  const isMounted = useSyncExternalStore(
+    subscribeToMount,
+    getClientMountSnapshot,
+    getServerMountSnapshot
+  );
   const playerRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
 
   // Compute total duration in frames (30fps)
   const fps = 30;

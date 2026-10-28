@@ -1,29 +1,10 @@
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { DBService } from "@/lib/db";
+import { connection, NextResponse } from "next/server";
+import { getAuthenticatedUser } from "@/lib/server-auth";
 
-export async function GET(req) {
+export async function GET() {
+  await connection();
   try {
-    let email = null;
-
-    try {
-      const session = await getServerSession(authOptions);
-      if (session?.user?.email) {
-        email = session.user.email;
-      }
-    } catch {}
-
-    if (!email) {
-      email = req?.cookies?.get("revid_user_email")?.value;
-    }
-
-    if (!email) {
-      return NextResponse.json({ authenticated: false, user: null });
-    }
-
-    const user = await DBService.getUserByEmail(email);
-
+    const user = await getAuthenticatedUser();
     if (!user) {
       return NextResponse.json({ authenticated: false, user: null });
     }
@@ -44,7 +25,7 @@ export async function GET(req) {
     }
     console.error("[AUTH/ME] Error:", err);
     return NextResponse.json(
-      { authenticated: false, error: err.message },
+      { authenticated: false, error: "Failed to load user" },
       { status: 500 }
     );
   }

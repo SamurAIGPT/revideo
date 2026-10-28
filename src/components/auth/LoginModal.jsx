@@ -103,8 +103,8 @@ export function LoginModal({ isOpen, onClose }) {
           </div>
           <ul className="text-[11px] text-zinc-600 space-y-1 pl-5 list-disc">
             <li>50 Free Starter Credits for AI script generation</li>
-            <li>Cloud saving for all video projects & renders</li>
-            <li>Instant sync between studio, search, and repurpose</li>
+            <li>Cloud saving for your video projects</li>
+            <li>Video repurpose and script remixing</li>
           </ul>
         </div>
 

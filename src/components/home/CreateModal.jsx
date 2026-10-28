@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   X,
   Sparkles,
@@ -13,18 +13,11 @@ import {
 } from "lucide-react";
 
 export function CreateModal({ isOpen, onClose, initialData, onGenerate }) {
-  const [mode, setMode] = useState("idea"); // 'idea' | 'link' | 'music' | 'repurpose'
-  const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState(initialData?.mode || "idea"); // 'idea' | 'link' | 'music' | 'repurpose'
+  const [prompt, setPrompt] = useState(initialData?.prompt || "");
   const [url, setUrl] = useState("");
   const [duration, setDuration] = useState(30);
   const [isLoading, setIsLoading] = useState(false);
-
-  useEffect(() => {
-    if (initialData) {
-      if (initialData.mode) setMode(initialData.mode);
-      if (initialData.prompt) setPrompt(initialData.prompt);
-    }
-  }, [initialData]);
 
   if (!isOpen) return null;
 
@@ -32,9 +25,12 @@ export function CreateModal({ isOpen, onClose, initialData, onGenerate }) {
     e.preventDefault();
     setIsLoading(true);
     const finalPrompt = mode === "link" ? `Summary and viral breakdown of: ${url}` : prompt;
-    await onGenerate(finalPrompt || "3 viral psychological tricks", duration);
-    setIsLoading(false);
-    onClose();
+    try {
+      await onGenerate(finalPrompt || "3 viral psychological tricks", duration);
+      onClose();
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const quickIdeas = [

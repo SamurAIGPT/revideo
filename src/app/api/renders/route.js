@@ -1,35 +1,32 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { DBService } from "@/lib/db";
-
-async function getSessionUser(req) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (session?.user?.email) {
-      return await DBService.getUserByEmail(session.user.email);
-    }
-  } catch {}
-  try {
-    const email = req?.cookies?.get("revid_user_email")?.value;
-    if (!email) return null;
-    return await DBService.getUserByEmail(email);
-  } catch {
-    return null;
-  }
-}
+import { getAuthenticatedUser } from "@/lib/server-auth";
 
 export async function POST(req) {
   try {
-    const user = await getSessionUser(req);
-    const body = await req.json();
+    const user = await getAuthenticatedUser();
+    if (!user) return NextResponse.json({ success: false, error: "Sign in required" }, { status: 401 });
+
+    const body = await req.json().catch(() => null);
+    if (!body || (body.projectId != null && typeof body.projectId !== "string")) {
+      return NextResponse.json({ success: false, error: "Invalid render details" }, { status: 400 });
+    }
+
+    const durationSeconds = body.durationSeconds == null ? null : Number(body.durationSeconds);
+    const fileSizeBytes = body.fileSizeBytes == null ? null : Number(body.fileSizeBytes);
+    if (
+      (durationSeconds !== null && (!Number.isFinite(durationSeconds) || durationSeconds <= 0)) ||
+      (fileSizeBytes !== null && (!Number.isSafeInteger(fileSizeBytes) || fileSizeBytes <= 0))
+    ) {
+      return NextResponse.json({ success: false, error: "Invalid render details" }, { status: 400 });
+    }
 
     const render = await DBService.createRender({
       projectId: body.projectId || null,
-      userId: user?.id || null,
-      durationSeconds: body.durationSeconds || null,
-      videoUrl: body.videoUrl || null,
-      fileSizeBytes: body.fileSizeBytes || null,
+      userId: user.id,
+      durationSeconds,
+      videoUrl: typeof body.videoUrl === "string" ? body.videoUrl : null,
+      fileSizeBytes,
     });
 
     return NextResponse.json({
@@ -44,6 +41,9 @@ export async function POST(req) {
     });
   } catch (err) {
     console.error("[RENDERS/POST] Error:", err);
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    if (err.message === "Project not found") {
+      return NextResponse.json({ success: false, error: err.message }, { status: 404 });
+    }
+    return NextResponse.json({ success: false, error: "Failed to save render metadata" }, { status: 500 });
   }
 }

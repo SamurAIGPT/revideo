@@ -16,7 +16,7 @@ Revideo is a self-hostable Next.js app for building scene-based videos for TikTo
 
 - Turn a topic into a short script with scenes, narration, and suggested visuals.
 - Edit a project in a multi-track timeline and preview it in the browser.
-- Choose portrait, landscape, or square layouts, caption styles, music, and safe-zone guides.
+- Choose portrait, landscape, or square layouts, caption styles, uploaded music, and safe-zone guides.
 - Save and reopen projects with a PostgreSQL database managed through Prisma.
 - Search YouTube through the YouTube Data API and search TikTok or Instagram through MuAPI.
 - Generate remix script drafts from discovered videos.
@@ -25,9 +25,11 @@ Revideo is a self-hostable Next.js app for building scene-based videos for TikTo
 
 The app runs on your own infrastructure. You need Node.js, npm, and PostgreSQL. Google OAuth is used for sign-in. YouTube search and MuAPI integrations need their own API keys; provider usage, hosting, and database costs may apply.
 
-Script generation calls the OpenAI Chat Completions API and falls back to a local heuristic script if the remote request fails. The current route checks `MUAPIAPP_API_KEY` before `OPENAI_API_KEY` for that request. If you want OpenAI script generation, clear the example value and leave `MUAPIAPP_API_KEY` unset unless that key is also accepted by the OpenAI endpoint. MuAPI uses `MUAPIAPP_API_KEY` for social search and remix features.
+Script generation uses `OPENAI_API_KEY` for the OpenAI Chat Completions API and falls back to a local heuristic script if the remote request fails. `MUAPIAPP_API_KEY` is used only for social search and remix features. Script generation and successful remix requests each use 5 credits. Credit purchases are not available until a payment checkout is connected.
 
-The editor provides an in-browser Remotion preview. **MP4 export is not implemented yet:** the export dialog currently simulates progress, downloads a sample stock clip, and records render metadata. It does not encode the edited project into a video file.
+The editor provides an in-browser Remotion preview. **MP4 export is not implemented yet.** The export dialog reports this limitation and still lets you copy suggested social media text; it does not charge credits or download a sample clip.
+
+Uploaded media is stored in the browser's IndexedDB so it can be restored after a reload on that browser. Project metadata is saved to PostgreSQL, but uploaded file bytes are not synced to other browsers or devices; cloud media storage is not configured.
 
 ## How it works
 
@@ -53,7 +55,7 @@ cp .env.example .env.local
 
 ### 2. Configure environment
 
-Fill in the database and provider values in `.env.local`. Add the authentication values below; they are required by the app but are not currently included in `.env.example`:
+Fill in the database, authentication, and provider values in `.env.local`:
 
 ```env
 NEXTAUTH_URL="http://localhost:3000"
@@ -103,6 +105,10 @@ npm start
 | `/api/repurpose/remix` | `POST` | Request a remix script through MuAPI. |
 | `/api/saved-videos` | `GET`, `POST`, `DELETE` | Manage saved video references. |
 | `/api/renders` | `POST` | Save render metadata. This does not render a video file. |
+
+Project, saved-video, credit, remix, script-generation, and live-search APIs require a Google-authenticated session. User records are scoped to the signed-in account. Credit purchases are unavailable until checkout is integrated.
+
+Provider-backed search requests are limited to 20 per user per fixed one-minute window per endpoint. Script generation is limited to 12 requests per window and remix generation to 8; counters are stored in PostgreSQL so the limits apply across server instances.
 
 ## Project structure
 

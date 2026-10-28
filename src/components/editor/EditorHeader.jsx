@@ -121,13 +121,25 @@ export function EditorHeader() {
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-400" />
                 <span className="text-[11px] text-zinc-400">Saving...</span>
               </>
-            ) : (
+            ) : saveStatus === "saved" ? (
               <>
                 <div className="relative flex items-center justify-center">
                   <Cloud className="w-4 h-4 text-zinc-400" />
                   <Check className="w-2.5 h-2.5 absolute text-emerald-600 stroke-[3]" />
                 </div>
                 <span className="text-[11px] text-zinc-500">Saved</span>
+              </>
+            ) : saveStatus === "error" ? (
+              <>
+                <Cloud className="w-4 h-4 text-red-500" />
+                <span className="text-[11px] text-red-600">Save failed</span>
+              </>
+            ) : (
+              <>
+                <Cloud className="w-4 h-4 text-zinc-400" />
+                <span className="text-[11px] text-zinc-500">
+                  {isAuthenticated ? "Unsaved" : "Sign in to save"}
+                </span>
               </>
             )}
           </div>

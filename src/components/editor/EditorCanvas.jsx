@@ -1,11 +1,15 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState, useSyncExternalStore } from "react";
 import { Player } from "@remotion/player";
 import { RevidVideoComposition } from "@/components/video/RevidVideoComposition";
 import { SafeZonesOverlay } from "./SafeZonesOverlay";
 import { useVideoEditor } from "@/context/VideoEditorContext";
 import { MessageSquare, Sparkles, Shield, Camera } from "lucide-react";
+
+const subscribeToMount = () => () => {};
+const getClientMountSnapshot = () => true;
+const getServerMountSnapshot = () => false;
 
 export function EditorCanvas() {
   const {
@@ -26,12 +30,12 @@ export function EditorCanvas() {
     audioTrackData,
   } = useVideoEditor();
 
-  const [isMounted, setIsMounted] = useState(false);
+  const isMounted = useSyncExternalStore(
+    subscribeToMount,
+    getClientMountSnapshot,
+    getServerMountSnapshot
+  );
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
 
   // Canvas aspect dimension calculation
   let compWidth = 1080;
