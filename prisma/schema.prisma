@@ -1,0 +1,118 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-1.0.x", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String         @id @default(cuid())
+  name          String?
+  email         String?        @unique
+  emailVerified DateTime?
+  image         String?
+  credits       Int            @default(50)
+  customApiKey  String?
+  accounts      Account[]
+  sessions      Session[]
+  videoProjects VideoProject[]
+  savedVideos   SavedVideo[]
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model VideoProject {
+  id              String   @id
+  userId          String?
+  title           String   @default("Untitled Video")
+  prompt          String?  @db.Text
+  script          String?  @db.Text
+  aspectRatio     String   @default("9:16") @map("aspect_ratio")
+  durationSeconds Int      @default(30) @map("duration_seconds")
+  voice           String   @default("marcus")
+  captionStyle    String   @default("hormozi") @map("caption_style")
+  musicTrack      String   @default("lofi") @map("music_track")
+  musicVolume     Decimal  @default(0.25) @map("music_volume")
+  scenes          Json     @default("[]")
+  thumbnailUrl    String?  @map("thumbnail_url")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  user            User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("video_projects")
+}
+
+model VideoRender {
+  id              String   @id @default(cuid())
+  projectId       String?  @map("project_id")
+  userId          String?  @map("user_id")
+  status          String   @default("completed")
+  videoUrl        String?  @map("video_url") @db.Text
+  durationSeconds Decimal? @map("duration_seconds")
+  fileSizeBytes   BigInt?  @map("file_size_bytes")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("video_renders")
+}
+
+model SavedVideo {
+  id        String   @id
+  userId    String?  @map("user_id")
+  videoId   String   @map("video_id")
+  platform  String   @default("youtube")
+  title     String?  @db.Text
+  coverUrl  String?  @map("cover_url") @db.Text
+  views     BigInt   @default(0)
+  likes     BigInt   @default(0)
+  videoUrl  String?  @map("video_url") @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("saved_videos")
+}
+
+model CreditTransaction {
+  id           String   @id
+  userId       String   @map("user_id")
+  amount       Int
+  type         String
+  reason       String?
+  balanceAfter Int?     @map("balance_after")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("credit_transactions")
+}
